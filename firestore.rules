@@ -1,0 +1,127 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 0. Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Phase 3: Primitives
+    function isSignedIn() { return request.auth != null; }
+    function isOwner(ownerId) { return isSignedIn() && request.auth.uid == ownerId; }
+    function isSelf(userId) { return isSignedIn() && request.auth.uid == userId; }
+    function isVerified() { return isSignedIn(); } // Changed from strictly checking email_verified to allow immediate access
+    function incoming() { return request.resource.data; }
+    function existing() { return resource.data; }
+    function isValidId(id) { return id is string && id.size() <= 128; } // Simplified regex for compatibility
+
+    // Entity Specific Validations
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['email', 'createdAt']) &&
+             data.email is string && data.email.size() <= 256 &&
+             (data.createdAt == request.time || data.createdAt is string) && // Allow both for migration safety
+             (data.get('displayName', '') is string) &&
+             (data.get('photoURL', '') is string);
+    }
+
+    function isValidHiea(data) {
+      return data.keys().hasAll(['name', 'ownerId']) &&
+             data.name is string && data.name.size() <= 100 &&
+             data.ownerId == request.auth.uid &&
+             (data.get('color', '#000000') is string) &&
+             (data.get('goalIds', []) is list) &&
+             data.get('goalIds', []).size() <= 50;
+    }
+
+    function isValidGoal(data) {
+      return data.keys().hasAll(['name', 'type', 'ownerId', 'hieaId']) &&
+             data.name is string && data.name.size() <= 200 &&
+             data.ownerId == request.auth.uid &&
+             data.type in ['objective', 'target'] &&
+             isValidId(data.hieaId);
+    }
+
+    function isValidProject(data) {
+      return data.keys().hasAll(['name', 'ownerId', 'status', 'progress']) &&
+             data.name is string && data.name.size() <= 200 &&
+             data.ownerId == request.auth.uid &&
+             data.status in ['upcoming', 'in-progress', 'completed'] &&
+             data.progress is number && data.progress >= 0 && data.progress <= 100;
+    }
+
+    function isValidConference(data) {
+      return data.keys().hasAll(['name', 'ownerId', 'startDate', 'location']) &&
+             data.name is string && data.name.size() <= 200 &&
+             data.ownerId == request.auth.uid &&
+             data.startDate is string &&
+             data.location is string && data.location.size() <= 300;
+    }
+
+    function isValidCalendarEvent(data) {
+      return data.keys().hasAll(['title', 'date', 'startTime', 'endTime', 'ownerId', 'type']) &&
+             data.title is string && data.title.size() <= 200 &&
+             data.ownerId == request.auth.uid &&
+             data.type in ['meeting', 'milestone', 'deadline', 'other'];
+    }
+
+    // Collection: Users
+    match /users/{userId} {
+      allow get: if isSelf(userId);
+      allow create: if isSelf(userId) && isValidUserProfile(incoming());
+      allow update: if isSelf(userId) && 
+                      incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'photoURL', 'description', 'updatedAt']) &&
+                      (incoming().get('updatedAt', request.time) == request.time);
+    }
+
+    // Collection: Hieas
+    match /hieas/{hieaId} {
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(hieaId) && isValidHiea(incoming());
+      allow update: if isVerified() && isOwner(existing().ownerId) && isValidHiea(incoming()) &&
+                      incoming().ownerId == existing().ownerId;
+      allow delete: if isVerified() && isOwner(existing().ownerId);
+    }
+
+    // Collection: Goals
+    match /goals/{goalId} {
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(goalId) && isValidGoal(incoming());
+      allow update: if isVerified() && isOwner(existing().ownerId) && isValidGoal(incoming()) &&
+                      incoming().ownerId == existing().ownerId;
+      allow delete: if isVerified() && isOwner(existing().ownerId);
+    }
+
+    // Collection: Projects
+    match /projects/{projectId} {
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(projectId) && isValidProject(incoming());
+      allow update: if isVerified() && isOwner(existing().ownerId) && isValidProject(incoming()) &&
+                      incoming().ownerId == existing().ownerId;
+      allow delete: if isVerified() && isOwner(existing().ownerId);
+    }
+
+    // Collection: Conferences
+    match /conferences/{confId} {
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(confId) && isValidConference(incoming());
+      allow update: if isVerified() && isOwner(existing().ownerId) && isValidConference(incoming()) &&
+                      incoming().ownerId == existing().ownerId;
+      allow delete: if isVerified() && isOwner(existing().ownerId);
+    }
+
+    // Collection: Calendar Events
+    match /calendar_events/{eventId} {
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow create: if isVerified() && isValidId(eventId) && isValidCalendarEvent(incoming());
+      allow update: if isVerified() && isOwner(existing().ownerId) && isValidCalendarEvent(incoming()) &&
+                      incoming().ownerId == existing().ownerId;
+      allow delete: if isVerified() && isOwner(existing().ownerId);
+    }
+  }
+}
